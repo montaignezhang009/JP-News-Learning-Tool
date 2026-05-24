@@ -25,25 +25,73 @@ const shuffleArray = (array) => {
 };
 
 /**
- * 振假名解析引擎 (汉字[假名] -> Ruby HTML)
+ * 振假名解析引擎
+ * 兼容两种 AI 标注风格：
+ *   1) 美味[おい]しい  —— 送り仮名写在括号外（标准）
+ *   2) 美味しい[おいしい] —— 送り仮名被写进了括号前（常见的 AI 不规范标注）
+ * 解析时把 base 首尾的假名剥离成普通文本，读音也削去对应的首尾假名，
+ * 保证注音只精准压在中间的汉字核心上。
  */
 const parseFurigana = (text) => {
   if (!text) return [];
-  const regex = /([^\[\]]+)\[([^\[\]]+)\]/g;
+
+  // 汉字（含扩展A、兼容区、々〆〇）。其余视为假名/普通字符。
+  const KANJI = '\\u3005\\u3006\\u3007\\u4e00-\\u9fff\\u3400-\\u4dbf\\uf900-\\ufaff';
+  const kanjiRe = new RegExp(`[${KANJI}]`);
+  // 宽松捕获：括号前紧邻的一段“非括号、非空白、非分隔符”的词。
+  const regex = /([^\s\[\]，,｜|]+)\[([^\[\]]+)\]/g;
+
+  const isKana = (ch) => !kanjiRe.test(ch) && /[\u3040-\u30ff\u31f0-\u31ff\uff66-\uff9f]/.test(ch);
+
   const parts = [];
   let lastIndex = 0;
   let match;
 
+  const pushText = (s) => { if (s) parts.push({ type: 'text', content: s }); };
+
   while ((match = regex.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      parts.push({ type: 'text', content: text.substring(lastIndex, match.index) });
+      pushText(text.substring(lastIndex, match.index));
     }
-    parts.push({ type: 'ruby', base: match[1], rt: match[2] });
+
+    let base = match[1];
+    let reading = match[2];
+
+    // 1) 剥离 base 开头的假名前缀
+    let prefix = '';
+    while (base.length && isKana(base[0])) {
+      prefix += base[0];
+      base = base.slice(1);
+    }
+    if (prefix && reading.startsWith(prefix)) {
+      reading = reading.slice(prefix.length);
+    }
+
+    // 2) 剥离 base 末尾的送り仮名后缀
+    let suffix = '';
+    while (base.length && isKana(base[base.length - 1])) {
+      suffix = base[base.length - 1] + suffix;
+      base = base.slice(0, -1);
+    }
+    if (suffix && reading.endsWith(suffix)) {
+      reading = reading.slice(0, reading.length - suffix.length);
+    }
+
+    pushText(prefix);
+
+    if (base && reading) {
+      parts.push({ type: 'ruby', base, rt: reading });
+    } else {
+      pushText(base);
+    }
+
+    pushText(suffix);
+
     lastIndex = regex.lastIndex;
   }
 
   if (lastIndex < text.length) {
-    parts.push({ type: 'text', content: text.substring(lastIndex) });
+    pushText(text.substring(lastIndex));
   }
 
   return parts.length > 0 ? parts : [{ type: 'text', content: text }];
@@ -151,8 +199,9 @@ const App = () => {
       <span className={className}>
         {parts.map((part, i) => (
           part.type === 'ruby' ? (
-            <ruby key={i} className="px-0.5">
-              {part.base}<rt className={`text-[0.45em] mb-1.5 ${rtColor} font-bold uppercase`}>{part.rt}</rt>
+            <ruby key={i} className="ruby-wrap">
+              {part.base}
+              <rt className={`${rtColor} font-bold`}>{part.rt}</rt>
             </ruby>
           ) : <span key={i}>{part.content}</span>
         ))}
@@ -366,6 +415,20 @@ const App = () => {
         }
         rt {
           ruby-position: over;
+          ruby-align: center;
+          font-size: 0.5em;
+          line-height: 1;
+          transform: translateY(-0.15em);
+          letter-spacing: -0.02em;
+        }
+        .ruby-wrap {
+          ruby-align: center;
+          margin-inline: 0.02em;
+        }
+        @supports (-moz-appearance: none) {
+          rt {
+            transform: translateY(-0.05em);
+          }
         }
         .scrollbar-hide::-webkit-scrollbar {
           display: none;
